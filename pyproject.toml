@@ -1,0 +1,32 @@
+# TB3 task-generation pipeline — packaging metadata + Python dependencies.
+#
+# `pip install .` (or `pip install -e .`) installs the dependencies below. The stage
+# scripts run as `python pipeline/<stage>.py` (they self-insert pipeline/ on sys.path),
+# so no importable package is installed — just the deps. Same set as
+# pipeline/requirements.txt; keep the two in sync.
+#
+# NOT installed here (on purpose):
+#   - External CLIs: harbor, docker, uv, node + the `claude` CLI, codex, gemini.
+#     See README.md "Prerequisites"; `python pipeline/preflight.py` verifies them.
+#   - AutoQA v3's own deps: it runs in its OWN interpreter ([autoqa].python in
+#     pipeline/config/pipeline.toml). Install with:
+#       pip install -r external/codex-terminal-bench-auto-generation/requirements.txt
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harbor-task-generator"
+version = "0.1.0"
+description = "Terminal Bench 3 task-generation pipeline: a Claude Agent SDK conductor that authors, model-breaks, and QAs TB3 tasks."
+requires-python = ">=3.11"
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "rich>=13.0",      # watch_run.py live monitor
+    "textual>=0.60",   # watch_tui.py multi-run TUI
+]
+
+[tool.setuptools]
+# Deps-only install: the pipeline is run via its scripts, not imported as a package.
+py-modules = []
