@@ -1,0 +1,192 @@
+# =====================================================================
+# TB3 task-generation pipeline — configuration
+#
+# Three stages, each an independently-runnable Python script driven by
+# the Claude Agent SDK:
+#   stage1_author.py  build a confidently-breaking, fair, oracle+nop-passing task
+#   stage2_break.py   harden until GPT-5.5 fails k/k AND the reviewer approves
+#   stage3_qa.py      pass harbor check + analyze without losing the break
+#
+# Tweak values here; the scripts read this file on startup.
+# =====================================================================
+
+[general]
+# TB3 reference repo (rubrics, good-task standards, task exemplars). Vendored as a
+# git submodule at external/terminal-bench-3 (pinned to `main`). Path is repo-relative
+# unless absolute; override at runtime with the $TB3_REPO env var. The creator-UI lever
+# catalog is NOT an external repo — it is vendored at pipeline/levers/hardening_guidelines.md.
+tb3_repo        = "external/terminal-bench-3"
+# Where per-task run workspaces + snapshots live (relative to the repo root).
+runs_root       = "runs"
+
+[task]
+# Default metadata written into generated task.toml files (Stage 1 author).
+# Override these for your organization before running the pipeline.
+org           = "tasks"
+author_name   = "Pipeline Author"
+author_email  = "tasks@example.com"
+
+[agent]
+# Claude model for ALL stage agents (builder AND reviewer).
+model           = "claude-opus-4-8"
+# Unattended: auto-approve tool use. (Builder needs Write/Edit/Bash.)
+permission_mode = "bypassPermissions"
+max_turns       = 250
+# Stalled-stream watchdog: if the model produces NO streamed activity for this many
+# seconds in a turn, treat the API stream as hung. On stall the session interrupts
+# the dead turn, waits stall_settle_sec for the interrupt to flush, then re-issues
+# the turn (context preserved) up to stall_retries times; otherwise it aborts the
+# stage with a StallError instead of hanging forever.
+# 600s is generous for a long "thinking" gap so we don't trip a slow-but-alive
+# response; the watchdog still catches a truly dead stream.
+stall_timeout_sec = 600
+stall_retries     = 2
+# Pause after an interrupt before re-issuing, so the SDK can flush the interrupt and
+# not collide with a half-finished tool_use (which yields a stop_reason=tool_use error).
+stall_settle_sec  = 5
+# Transient Anthropic API errors (HTTP 429/500/503/529 "overloaded", server_error) are
+# retried in-session with exponential backoff + full jitter before the stage aborts — so a
+# brief API overload doesn't kill a long run. Auth/billing errors are NEVER retried.
+api_max_retries      = 5      # transient-error retries per turn
+api_backoff_base_sec = 2.0    # backoff = uniform(0, min(max, base * 2**attempt))  [full jitter]
+api_backoff_max_sec  = 60.0   # cap on a single backoff wait
+
+[harbor]
+bin                 = "harbor"
+env                 = "docker"
+# The SOTA agent/model we want the task to BREAK (cheapest first per plan).
+break_agent         = "codex"
+break_model         = "openai/gpt-5.5"
+break_agent_kwargs  = ["reasoning_effort=xhigh"]   # passed as --ak key=value
+break_k             = 3                              # full trials per break check (fallback)
+break_concurrency   = 3                              # concurrent trials (docker)
+# Staged break check (cost-saver): run break_probe_k trial(s) FIRST; only if that
+# breaks (fails) run break_extra_k MORE (in parallel) to confirm over the full set.
+# While the task is still too easy the loop spends just 1 trial/round instead of 3.
+break_probe_k       = 1                              # probe trials run first
+break_extra_k       = 2                              # extra trials run only after the probe breaks
+# Reuse break trials when the task hasn't changed (fingerprint-keyed, within a stage run).
+# The same (xhigh) gpt-5.5 break otherwise re-runs at Phase A's last breaking round, again at
+# Phase B's re-confirm, and again at Phase C's accept gate — all on a byte-identical task. With
+# this on, a hit reuses the SAME trajectories (so analyze + the Task QA SOTA checks judge the
+# identical run dirs) at zero extra trial cost. Fail-safe: ANY edit under task/ misses the cache
+# and re-runs. oracle/no-op stay fresh at the gate (cheap mechanical re-check). Set false to
+# always re-run (e.g. to sample break stability fresh each phase).
+reuse_break_trajectories = true
+# QA models (require ANTHROPIC_API_KEY). Pinned to match the official TB3 repo
+# (.github/harbor-run-defaults.yml + CONTRIBUTING.md): check = opus-4-7, analyze = sonnet.
+check_model         = "anthropic/claude-opus-4-7"   # official `harbor check` model
+analyze_model       = "sonnet"                        # official `harbor analyze` model
+# harbor analyze is a HARD GATE (Stage 2 + Stage 3): it must actually run and must not flag
+# the task unfair. Retry transient analyze failures this many times before declaring it failed.
+analyze_max_retries = 3
+# harbor CHECK can also blip (no parseable JSON — API/timeout, or a laptop sleeping mid-check);
+# retry it the same way so a transient doesn't spuriously fail a Stage-3 QA round.
+check_max_retries   = 3
+# Rubrics (absolute → as-is; else repo-local file preferred, falling back to tb3_repo).
+impl_rubric         = "rubrics/task-implementation.toml"
+# Trial-analysis rubric + job prompt: VENDORED copies (pipeline/rubrics/) = the pinned TB3
+# files + the `non_clericalness` criterion (from terminal-bench-pipeline
+# feat/non-clericalness). It rides the same multi-model matrix + 3-state coloring as every
+# other analyze criterion; RED hard-blocks via analyze_hard_red below.
+trial_rubric        = "pipeline/rubrics/trial-analysis.toml"
+trial_job_prompt    = "pipeline/rubrics/trial-analysis-job.txt"
+# `harbor analyze` is an LLM judgment that can fluctuate run-to-run, so it is NOT a
+# mechanical hard gate. (Legacy/Stage-3 setting.) The reviewer's verdict is the gate.
+analyze_adjudicate  = ["task_specification", "reward_hacking"]
+# 3-state gate (Stage-2 Phase C), using the OFFICIAL TB3 per-criterion coloring across the
+# multi-model matrix below (🟢 all pass / 🟡 some fail / 🔴 all fail):
+#  - analyze_hard_red:     HARD-block only when RED (unanimous fail across ALL trajectories).
+#  - analyze_hard_anyfail: HARD-block on ANY failing trajectory (RED or YELLOW) — for
+#    reward_hacking, where even one successful cheat is disqualifying (≈ official cheat-trials).
+# Everything else (incl. a YELLOW task_specification) is NOT hard-blocked — it goes to the
+# fairness reviewer to adjudicate.
+analyze_hard_red     = ["task_specification", "non_clericalness"]
+analyze_hard_anyfail = ["reward_hacking"]
+
+# ---- Phase C multi-model analyze matrix --------------------------------------------------
+# At the Phase-C accept gate ONLY (not every round), the conductor runs the break model
+# (gpt-5.5) PLUS these extra models, runs `harbor analyze` over ALL their trajectories, and
+# aggregates the per-criterion 3-state color. We only require ONE model (gpt-5.5) to be
+# broken; the others exist to surface cross-model disagreement as YELLOW (reviewer-adjudicated)
+# instead of a single-model false RED. Each entry: tag / agent (harbor agent) / model / kwargs / k.
+# NOTE: array-of-tables MUST stay at the END of [harbor] (TOML scoping).
+analyze_matrix_failing = false   # analyze ALL trials (not just failing) so passing models count
+
+[[harbor.analyze_matrix]]
+tag    = "claude-opus-4.8"
+agent  = "claude-code"
+model  = "anthropic/claude-opus-4-8"
+kwargs = ["reasoning_effort=high"]
+k      = 3
+
+[[harbor.analyze_matrix]]
+tag    = "gemini-terminus2"
+# Official TB3 3.0 drives Gemini through the harbor-native `terminus-2` agent (litellm
+# routing), NOT the `gemini-cli` agent (which shells out to Google's gemini CLI tool). Use
+# terminus-2 for parity with the official harness and to avoid gemini-cli's own auth/tooling
+# quirks. litellm REQUIRES the `provider/model_name` form; uses GEMINI_API_KEY from env.
+# Still degrades gracefully if the leg fails (drops out of the matrix; analyze continues on
+# gpt-5.5 + opus).
+agent  = "terminus-2"
+model  = "gemini/gemini-3.1-pro-preview"
+kwargs = []
+k      = 3
+
+[caps]
+stage1_max_rounds        = 6   # author -> oracle/nop passing
+# Phase A: the builder has NO give-up option — it keeps designing new fair conceptual
+# forks every round until the model fails or this round cap is hit (the cap is a
+# mechanical backstop the agent is never told about, not an agent decision).
+stage2_break_max_rounds  = 7
+stage2_oracle_max_rounds = 4   # phase B: restore oracle/nop while still breaking
+stage2_final_max_rounds  = 2   # phase C: re-verify (break/oracle/nop/analyze/reviewer) + loop builder before needs_human
+stage3_max_rounds        = 5   # outer QA fix loop (Phase A)
+# Stage 3 Phase B re-verifies the break (break/no-op/oracle/analyze/reviewer) after QA
+# is clean. This caps the EXPENSIVE GPT-5.5 re-break: initial verify + this many
+# self-heal retries. On non-convergence Stage 3 salvages with a reviewer verdict.
+stage3_verify_max_rounds = 2
+
+[autoqa]
+# AutoQA v3 — legacy optional QA path. Disabled by default; use [task_qa] instead.
+# Rollback is config-only: flip this to true and [task_qa] enabled to false.
+enabled   = false
+# mode: "llm_only" runs NO oracle and NO SOTA-model checks (purely LLM-judged) —
+# this is what Stage 3 uses. "batch" drops only the 5 SOTA checks but still runs
+# the oracle; "execution_then_llm"/"all" run oracle AND SOTA.
+mode      = "llm_only"
+# Parent dir from which `python -m task_evaluation.autoqa_v3 <task>` runs. Vendored as a
+# git submodule at external/codex-terminal-bench-auto-generation (pinned to `feat/accountability`).
+# Path is repo-relative unless absolute; override at runtime with the $AUTOQA_CWD env var.
+autoqa_cwd = "external/codex-terminal-bench-auto-generation"
+# Python interpreter that has the AutoQA v3 deps installed (PATH name or abs path).
+python    = "python"
+
+[task_qa]
+# Task QA engine (external/task-qa submodule, editable-installed).
+# Two legs:
+#   llm_checks    — non-SOTA LLM checks, Stage 3 Phase A (replaces AutoQA llm_only).
+#                   BINARY gate: any failed/error check blocks.
+#   *sota_checks  — SOTA-trajectory checks. We INJECT our own break-trial trajectories
+#                   — NO fresh SOTA trial is ever run. 3-STATE gate per check across all
+#                   break trajectories (same rule as harbor analyze).
+# API keys: the conductor bridges QA_JUDGE_OPENAI_API_KEY (falls back to
+# TASK_QA_OPENAI_API_KEY, AUTOQA_OPENAI_API_KEY, then OPENAI_API_KEY) automatically.
+enabled            = true
+# CLI binary on PATH (default matches the upstream package; rename in your fork if needed).
+bin                = "task-qa"
+llm_checks         = ["task-structure", "docker-environment-hygiene",
+                      "reward-file-correctness", "solution-verifiability",
+                      "instruction-quality", "input-artifacts-verifiability", "coverage"]
+# Stage 2 Phase C (accept-time, alongside the analyze matrix): unfairness/brittleness
+# detection on the breaking trajectories themselves.
+stage2_checks      = ["false-negatives"]
+# Stage 3 Phase B (accept-time, alongside the analyze matrix): the full SOTA set.
+stage3_sota_checks = ["false-negatives", "false-positives", "valid-constraint-allowance"]
+# Per-check subprocess timeout (sec).
+timeout            = 1800
+
+[gate]
+# Between-stage human checkpoint. "stdin" = ask on the terminal (now).
+# "auto" = no human (future productionization — swap with no code changes).
+mode = "stdin"
