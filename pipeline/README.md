@@ -142,13 +142,11 @@ runs/<slug>/                per-task workspace + snapshots + logs + state (git-i
 - `[autoqa].enabled = false` — AutoQA v3 is intentionally **off** for v1 (harbor
   check/analyze only); the hook is reserved for later.
 
-## Known calibration points (expected on first real run)
+## Calibration notes
 - The `harbor check` / `harbor analyze` JSON schemas vary by harbor version. The
   parsers in `lib/harbor.py` (`_iter_criteria`, `_criterion_failed`) are tolerant
-  but may need a small tweak once we see the real output — every run dumps the raw
-  JSON under `runs/<slug>/harbor/stageN/` so we can calibrate quickly.
+  by design; when a harbor update shifts a schema, every run dumps its raw JSON
+  under `runs/<slug>/harbor/stageN/`, making recalibration quick.
 - The Claude Agent SDK option names (`ClaudeAgentOptions` fields, `setting_sources`,
   `skills`) can shift between SDK releases; `lib/sdk.py` is the single place to
   adjust if a field is rejected.
-
-Report back what you see between stages and I'll tune the pipeline.
