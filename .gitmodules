@@ -1,0 +1,11 @@
+[submodule "external/terminal-bench-3"]
+	path = external/terminal-bench-3
+	url = https://github.com/harbor-framework/terminal-bench-3.git
+	branch = main
+[submodule "external/task-qa"]
+	path = external/task-qa
+	url = https://github.com/YOUR_ORG/task-qa.git
+[submodule "external/codex-terminal-bench-auto-generation"]
+	path = external/codex-terminal-bench-auto-generation
+	url = https://github.com/YOUR_ORG/codex-terminal-bench-auto-generation.git
+	branch = feat/accountability

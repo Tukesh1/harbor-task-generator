@@ -1,0 +1,11 @@
+# TB3 task-generation pipeline — Python deps (Python 3.11+).
+#
+# External (NOT pip-installed here — see the root README "Prerequisites" + preflight.py):
+#   - CLIs: harbor, docker, uv, node + the `claude` CLI (the Agent SDK drives it),
+#           `codex` (break agent), `gemini` (analyze-matrix agent).
+#   - Repos: terminal-bench-3 + codex-terminal-bench-auto-generation (git submodules
+#            under external/; run `git submodule update --init`). AutoQA has its OWN
+#            requirements.txt — install it into the interpreter named by [autoqa].python.
+claude-agent-sdk>=0.1.0
+rich>=13.0            # watch_run.py live monitor
+textual>=0.60        # watch_tui.py multi-run TUI
