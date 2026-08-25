@@ -1,4 +1,4 @@
-# harbor-task-generator — Terminal Bench 3 task-generation pipeline
+# Terminal Bench 3 task-generation pipeline
 
 A Python **conductor** that turns a one-page **task proposal** into a finished
 [Terminal Bench 3](https://github.com/harbor-framework/terminal-bench-3) (TB3) task that is
@@ -7,7 +7,7 @@ instructions + environment alone), and **QA-passing** (`harbor check` + `harbor 
 drives stage **agents** (a builder + an independent fairness reviewer) via the Claude Agent SDK,
 while Python runs the authoritative `harbor` trials and owns every gate decision.
 
-Three Claude Code sessions / stages create a task:
+Three agent-driven stages create a task:
 
 1. **Stage 1 — author.** Generate a working skeleton from a proposal. The builder knows it'll be
    judged on model-breaking + quality, but isn't graded yet. Non-blocking. Gate: oracle (reward
