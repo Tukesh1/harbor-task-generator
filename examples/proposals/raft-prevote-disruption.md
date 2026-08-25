@@ -1,0 +1,31 @@
+# Task Proposal: raft-prevote-disruption
+
+**Domain:** Distributed systems / Consensus (SWE)
+
+## Overview
+
+A small in-house Raft implementation in Go (or Rust — the agent gets one language) is exhibiting catastrophic leader churn under a specific operational pattern. The cluster has 5 nodes; when one node's network link goes flaky (high packet loss but not full partition — the kind of intermittent connectivity that real datacenter links produce), the entire cluster's leadership starts oscillating. Within a 10-minute window the cluster will elect 30+ different leaders, commit throughput collapses to near zero, and applications above the Raft layer time out. When the flaky link recovers, the cluster takes another 1–2 minutes to settle. Under perfect networks the implementation is correct and fast; under a clean partition (full disconnect) it also recovers cleanly.
+
+The agent is given the Raft implementation source, a deterministic network simulator that reproduces the failure on a fixed seed (a simulator that introduces packet loss, reordering, and delay following a configurable distribution), the trace from a representative failure, the original Raft paper, and a held-out set of network-fault scenarios (different loss rates, different durations, different which-node-is-flaky) that the verifier will replay.
+
+## Instruction Crux
+
+Modify the Raft implementation such that on every held-out fault scenario, (a) the cluster elects at most 3 leaders over the duration of the scenario, (b) committed-throughput-during-fault stays at ≥ 60% of throughput under no fault, (c) once the fault clears, the cluster reaches a stable leader within 10 seconds, and (d) safety properties (no two leaders in the same term, no committed entry ever lost) are preserved at all times. The Raft API (Propose, AppendEntries, RequestVote, etc.) and the on-disk log format must be preserved. The agent is free to add new RPCs, new states, new timers, or anything else, so long as the public API is unchanged.
+
+## Solution Crux
+
+The bug is that this implementation follows the original Raft paper literally: any follower whose heartbeat times out increments its term and starts a real election by sending RequestVote with the new term. The flaky-link node periodically misses heartbeats, increments its term to (say) 47, and broadcasts RequestVote(term=47) to every other node — including the current healthy leader at term 46. By the Raft rules, the healthy leader (and every other follower) must step down upon seeing a higher term, even though they have a working quorum and the disrupting node is the only one that wanted an election. The leader steps down, the cluster re-elects (often the same leader), and a few seconds later the flaky node times out again and the cycle repeats.
+
+The correct fix is the **PreVote** extension to Raft (described in Diego Ongaro's dissertation, used in production by etcd, TiKV, Consul, and others): before incrementing its term and disturbing the rest of the cluster, a follower whose heartbeat has timed out first runs a "pre-vote" round — it asks peers `would you vote for me at term T+1?` without actually advancing its own term, and only proceeds to a real election if a quorum says yes. The flaky node, which cannot reach a quorum due to packet loss, never gets pre-vote consent and thus never disturbs the cluster's term. A companion fix — the **CheckQuorum** extension — has a leader voluntarily step down if it cannot reach a quorum within an election timeout, which is needed to prevent a different failure mode where a stale leader hangs around. Either alone misses scenarios in the held-out set; the canonical implementation pairs them.
+
+Wrong-but-tempting fixes: (a) longer election timeouts on the flaky node — masks the symptom in some scenarios but fails on longer-duration faults; (b) leader stickiness / leadership transfer extensions — addresses a related problem but not this one; (c) ignoring RequestVote from nodes the leader has heard from recently — well-intentioned but breaks safety on a real failure where the leader has died; (d) just retrying writes more aggressively from the client — does nothing because the leader keeps stepping down; (e) randomizing election timeouts more — already done in the implementation, doesn't help.
+
+## Difficulty Crux
+
+The difficulty is that the Raft paper, read literally, does not mention this problem — the section on "disruption" in the original paper is brief. The PreVote extension exists in the dissertation but is not part of the protocol most implementations start with. An engineer reading the symptoms would naturally focus on the leader's behavior (why does it keep stepping down?) rather than the disrupting node's (why is it allowed to disrupt at all?). Recognizing that the failure is *correct Raft behavior under packet loss* — i.e., the implementation is "right" by the original paper and the cluster is misbehaving as designed — is the conceptual jump. Then knowing the PreVote+CheckQuorum extension is the right answer requires familiarity with the consensus literature (the dissertation, the etcd/TiKV history).
+
+The task is not hard from volume — the Raft codebase is on the order of a few thousand lines and the fix is a few hundred — or from formatting. It is hard because the bug is "the paper as written," the fix is "the extension you only learn about by reading the dissertation or production implementations," and the correctness gate is sharp: safety must still hold under all scenarios, which an ad-hoc patch tends to break.
+
+## Verification Note
+
+The verifier replays each held-out scenario through a deterministic network simulator with a fixed seed (deterministic packet drops, reorderings, and delays). It counts distinct leaders elected during the fault window, measures throughput during the fault, and measures convergence time after the fault clears. It separately runs a safety oracle that exhaustively checks across the simulation trace that (a) no two leaders coexist in the same term and (b) no committed entry is ever lost or reordered. Three held-out scenarios; all three must pass. Deterministic; same seed and same agent code produces the same verdict. No LLM judge.
